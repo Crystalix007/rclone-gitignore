@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const maxIgnorePatternLength: u32 = 1024;
+const maxIgnoreFilenameLength: u32 = 1024;
 
 fn trim(str: []u8) []u8 {
     var first: u64 = 0;
@@ -18,7 +19,7 @@ fn trim(str: []u8) []u8 {
     return str[first..last];
 }
 
-pub fn main() anyerror!void {
+pub fn main() anyerror!u8 {
     const fs = std.fs;
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -32,18 +33,36 @@ pub fn main() anyerror!void {
     const stdout = std.io.getStdOut().writer();
     const stderr = std.io.getStdErr().writer();
 
-    for (args[1..]) |arg| {
-        const absPath = try fs.path.resolve(allocator, &.{arg});
-        defer allocator.free(absPath);
+    if (args.len != 2) {
+        try stderr.print("Usage: {s} <root of path to sync>\n", .{args[0]});
+        return 1;
+    }
 
-        const basePath = fs.path.dirname(absPath) orelse {
-            try stderr.print("Could not get directory of file {s}\n", .{absPath});
+    const rootPath = args[1];
+
+    const stdin = std.io.getStdIn().reader();
+    var buffer: [maxIgnoreFilenameLength]u8 = undefined;
+
+    while (try stdin.readUntilDelimiterOrEof(&buffer, '\n')) |arg| {
+        const realPath = fs.realpathAlloc(allocator, arg) catch |err| switch (err) {
+            error.FileNotFound => {
+                try stderr.print("Failed to find file {s}\n", .{arg});
+                return err;
+            },
+            else => {
+                return err;
+            },
+        };
+        defer allocator.free(realPath);
+
+        const absDir = fs.path.dirname(realPath) orelse {
+            try stderr.print("Could not get directory of file {s}\n", .{realPath});
             return error.DirNotFound;
         };
 
-        const file = fs.openFileAbsolute(arg, .{ .read = true }) catch |err| switch (err) {
+        const file = fs.openFileAbsolute(realPath, .{ .read = true }) catch |err| switch (err) {
             error.FileNotFound => {
-                try stderr.print("Failed to read file {s}\n", .{arg});
+                try stderr.print("Failed to read file {s}\n", .{realPath});
                 return err;
             },
             else => {
@@ -57,7 +76,7 @@ pub fn main() anyerror!void {
         while (true) {
             var line: []u8 = reader.readUntilDelimiterOrEofAlloc(allocator, '\n', maxIgnorePatternLength) catch |err| switch (err) {
                 error.StreamTooLong => {
-                    try stderr.print("File '{s}'' has lines which are too long\n", .{arg});
+                    try stderr.print("File '{s}'' has lines which are too long\n", .{realPath});
                     break;
                 },
                 else => {
@@ -82,20 +101,25 @@ pub fn main() anyerror!void {
             var joined: []u8 = &.{};
 
             if (line[0] == '/') {
-                joined = try fs.path.join(allocator, &.{ basePath, line });
+                joined = try fs.path.join(allocator, &.{ absDir, line });
             } else {
-                joined = try fs.path.join(allocator, &.{ basePath, "**", line });
+                joined = try fs.path.join(allocator, &.{ absDir, "**", line });
             }
             defer allocator.free(joined);
 
+            const relative = try fs.path.relative(allocator, rootPath, joined);
+            defer allocator.free(relative);
+
             if (joined[joined.len - 1] != '/') {
-                try stdout.print("{s}\n", .{joined});
+                try stdout.print("{s}\n", .{relative});
             }
 
-            const globJoined = try fs.path.join(allocator, &.{ joined, "**" });
+            const globJoined = try fs.path.join(allocator, &.{ relative, "**" });
             defer allocator.free(globJoined);
 
             try stdout.print("{s}\n", .{globJoined});
         }
     }
+
+    return 0;
 }
