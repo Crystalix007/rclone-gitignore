@@ -79,23 +79,23 @@ pub fn main() anyerror!void {
                 continue;
             }
 
-            var terminator: u8 = 0;
+            var joined: []u8 = &.{};
 
             if (line[0] == '/') {
-                const joined = try fs.path.join(allocator, &.{ basePath, line });
-                terminator = joined[joined.len - 1];
-                try stdout.print("{s}", .{joined});
+                joined = try fs.path.join(allocator, &.{ basePath, line });
             } else {
-                const joined = try fs.path.join(allocator, &.{ basePath, "**", line });
-                terminator = joined[joined.len - 1];
-                try stdout.print("{s}", .{joined});
+                joined = try fs.path.join(allocator, &.{ basePath, "**", line });
+            }
+            defer allocator.free(joined);
+
+            if (joined[joined.len - 1] != '/') {
+                try stdout.print("{s}\n", .{joined});
             }
 
-            if (terminator == '/') {
-                try stdout.print("**", .{});
-            }
+            const globJoined = try fs.path.join(allocator, &.{ joined, "**" });
+            defer allocator.free(globJoined);
 
-            try stdout.print("\n", .{});
+            try stdout.print("{s}\n", .{globJoined});
         }
     }
 }
